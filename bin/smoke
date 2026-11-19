@@ -1,0 +1,210 @@
+#!/usr/bin/env -S node --no-warnings
+// Ignis AI Runtime Smoke Suite:
+// Validates SQLite schema, required core files, memory files, tool schemas, instructions builder,
+// activity labels, flame palettes, and conversation tree isolation across all 4 static codebase variants.
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  collectCalls,
+  describeCommand,
+  extractSpawnedSubagents,
+  presenceFor,
+} from "../app/components/activity.ts";
+import { getFlamePalette, resolveFlameVariant } from "../app/avatar/character/palettes.ts";
+import { listActiveRunIds, sanitizeMessagesForModel } from "../lib/agent/conversation-runner.ts";
+import { buildInstructions } from "../lib/agent/instructions.ts";
+import { createAgentTools } from "../lib/agent/tools.ts";
+import {
+  compactConversation,
+  compactMessagesForModel,
+  database,
+  deleteConversationSubtree,
+  getConversation,
+  listConversations,
+  saveConversation,
+} from "../lib/db.ts";
+
+const root = process.cwd();
+const hadDataDir = existsSync(path.join(root, "data"));
+const hasSubagents = existsSync(path.join(root, "lib", "agent", "subagent.ts"));
+const hasScheduler = existsSync(path.join(root, "lib", "agent", "scheduler.ts"));
+
+const db = database();
+const convRow = db.prepare("SELECT count(*) as count FROM conversations").get();
+if (typeof convRow?.count !== "number") {
+  throw new Error("Failed to query conversations count from SQLite.");
+}
+
+if (hasScheduler) {
+  const schedRow = db.prepare("SELECT count(*) as count FROM scheduled_tasks").get();
+  if (typeof schedRow?.count !== "number") {
+    throw new Error("Failed to query scheduled_tasks count from SQLite in scheduler-enabled variant.");
+  }
+}
+
+const requiredFiles = [
+  "app/layout.tsx",
+  "app/page.tsx",
+  "app/components/workspace.tsx",
+  "app/components/chat-pane.tsx",
+  "app/components/immutable-control-panel.tsx",
+  "app/components/starter-blueprints.tsx",
+  "app/components/activity.ts",
+  "app/api/chat/route.ts",
+  "app/api/conversations/route.ts",
+  "app/api/system/route.ts",
+  "lib/db.ts",
+  "lib/client/use-ignis-workspace.ts",
+  "lib/agent/instructions.ts",
+  "lib/agent/tools.ts",
+  "lib/agent/terminal.ts",
+  "lib/agent/browse.ts",
+  "lib/agent/conversation-runner.ts",
+  "bin/wt",
+  "bin/browse",
+  "bin/smoke",
+];
+
+for (const rel of requiredFiles) {
+  if (!existsSync(path.join(root, rel))) {
+    throw new Error(`Missing required Ignis file: ${rel}`);
+  }
+}
+
+for (const mem of ["philosophy.md", "plan.md", "frontier.md", "tree/context.md"]) {
+  const full = path.join(root, "memory", mem);
+  if (!existsSync(full) || readFileSync(full, "utf8").trim().length === 0) {
+    throw new Error(`Memory file missing or empty: memory/${mem}`);
+  }
+}
+
+// Verify core agent invariants
+const instructions = buildInstructions();
+if (!instructions.includes("Runtime & Hardware Substrate") || !instructions.includes("Ignis AI")) {
+  throw new Error("buildInstructions() missing core Ignis AI sections.");
+}
+
+const activeIds = listActiveRunIds();
+if (!(activeIds instanceof Set)) {
+  throw new Error("listActiveRunIds() did not return a Set.");
+}
+
+const tools = createAgentTools(root, "smoke-check");
+if (!tools.runCommand) {
+  throw new Error("createAgentTools() missing runCommand tool.");
+}
+if (hasSubagents && !tools.subagent) {
+  throw new Error("createAgentTools() missing subagent tool in subagent-enabled variant.");
+}
+if (!hasSubagents && tools.subagent) {
+  throw new Error("createAgentTools() should not expose subagent tool in non-subagent variant.");
+}
+
+if (describeCommand("./bin/wt land ui-polish") !== "Verify & land worktree ui-polish") {
+  throw new Error("describeCommand failed on ./bin/wt land.");
+}
+if (describeCommand("git status --short", "Inspect git status") !== "Inspect git status") {
+  throw new Error("describeCommand failed to prioritize explicit title.");
+}
+
+if (resolveFlameVariant("emerald") !== "emerald") {
+  throw new Error("resolveFlameVariant failed explicit variant.");
+}
+const autoA = getFlamePalette(undefined, "subagent-1");
+if (!autoA?.outer) {
+  throw new Error("getFlamePalette failed deterministic seed palette.");
+}
+
+const spawned = extractSpawnedSubagents(
+  "./bin/subagent run 'test' --label worker-a",
+  JSON.stringify({
+    ok: true,
+    conversationId: "conv_test_123",
+    label: "worker-a",
+    worktree: "wt-a",
+  }),
+);
+if (spawned.length !== 1 || spawned[0].conversationId !== "conv_test_123") {
+  throw new Error("extractSpawnedSubagents failed single subagent JSON parsing.");
+}
+
+const sampleMsgs = [
+  { id: "u1", role: "user", parts: [{ type: "text", text: "Hello Ignis" }] },
+];
+if (sanitizeMessagesForModel(sampleMsgs).length !== 1) {
+  throw new Error("sanitizeMessagesForModel failed on valid message.");
+}
+if (compactMessagesForModel(sampleMsgs).length !== 1) {
+  throw new Error("compactMessagesForModel failed on short message array.");
+}
+if (presenceFor("ready", collectCalls(sampleMsgs), sampleMsgs, null).caption !== "Ready") {
+  throw new Error("presenceFor failed ready state.");
+}
+
+// Verify Conversation Persistence, Compaction & Subtree Pruning in an isolated temp sandbox
+const smokeSandboxDir = path.join(os.tmpdir(), `ignis-smoke-${process.pid}-${Date.now()}`);
+const smokeDbPath = path.join(smokeSandboxDir, "data", "ignis.db");
+mkdirSync(path.join(smokeSandboxDir, "memory", "tree"), { recursive: true });
+for (const mem of ["philosophy.md", "plan.md", "frontier.md", "tree/context.md"]) {
+  const src = path.join(root, "memory", mem);
+  const dst = path.join(smokeSandboxDir, "memory", mem);
+  mkdirSync(path.dirname(dst), { recursive: true });
+  rmSync(dst, { force: true });
+  if (existsSync(src)) {
+    writeFileSync(dst, readFileSync(src, "utf8"), "utf8");
+  }
+}
+
+const prevDbPathEnv = process.env.IGNIS_DB_PATH;
+const prevRepoRootEnv = process.env.IGNIS_REPO_ROOT;
+process.env.IGNIS_DB_PATH = smokeDbPath;
+process.env.IGNIS_REPO_ROOT = smokeSandboxDir;
+
+try {
+  const rootId = "smoke_root_" + Date.now();
+  const childId = "smoke_child_" + Date.now();
+  const turns = Array.from({ length: 8 }, (_, idx) => ({
+    id: `m_${idx}`,
+    role: idx % 2 === 0 ? "user" : "assistant",
+    parts: [{ type: "text", text: `Turn ${idx + 1}` }],
+  }));
+  saveConversation(rootId, turns);
+  saveConversation(childId, [{ id: "c1", role: "user", parts: [{ type: "text", text: "Child" }] }], {
+    parentId: rootId,
+    slug: "worker-1",
+    ephemeral: true,
+  });
+
+  if (listConversations(10).length < 2) {
+    throw new Error("listConversations failed in sandbox.");
+  }
+
+  const compactRes = compactConversation(rootId, {
+    keepLast: 3,
+    summary: "Compacted initial turns.",
+    repoRoot: smokeSandboxDir,
+  });
+  if (!compactRes.ok || compactRes.newMessageCount !== 4) {
+    throw new Error("compactConversation failed in sandbox.");
+  }
+
+  const pruneRes = deleteConversationSubtree(rootId, smokeSandboxDir);
+  if (pruneRes.deletedIds.length !== 2 || getConversation(rootId) !== null) {
+    throw new Error("deleteConversationSubtree failed to prune root + child.");
+  }
+} finally {
+  if (prevDbPathEnv === undefined) delete process.env.IGNIS_DB_PATH;
+  else process.env.IGNIS_DB_PATH = prevDbPathEnv;
+  if (prevRepoRootEnv === undefined) delete process.env.IGNIS_REPO_ROOT;
+  else process.env.IGNIS_REPO_ROOT = prevRepoRootEnv;
+  database();
+  rmSync(smokeSandboxDir, { recursive: true, force: true });
+  if (!hadDataDir) {
+    rmSync(path.join(root, "data"), { recursive: true, force: true });
+  }
+}
+
+console.log(
+  `Ignis smoke check passed (variant: subagents=${hasSubagents}, scheduler=${hasScheduler})`,
+);

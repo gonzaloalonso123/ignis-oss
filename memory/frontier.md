@@ -1,0 +1,1 @@
+- Log any missing CLI primitives, user-requested integrations, or workspace improvements here as your Ignis AI environment evolves.

@@ -1,0 +1,14 @@
+services:
+  ignis-oss:
+    build: .
+    container_name: ignis-oss
+    ports:
+      - "3400:3400"
+    volumes:
+      - ./data:/workspace/ignis/data
+    env_file:
+      - path: ./.env
+        required: false
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped

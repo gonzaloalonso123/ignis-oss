@@ -1,0 +1,33 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js
+/.next/
+/out/
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (track .env.example)
+.env*
+!.env.example
+
+# typescript
+*.tsbuildinfo
+
+# runtime data & local worktrees
+/data
+/.worktrees/
+/.wt/
+/memory/*.db
+/memory/*.db-*

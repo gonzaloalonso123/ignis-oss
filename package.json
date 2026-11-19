@@ -1,0 +1,41 @@
+{
+  "name": "ignis-oss",
+  "version": "0.1.0",
+  "private": false,
+  "license": "MIT",
+  "description": "Ignis OSS — Open-source self-building personal AI workspace (Next.js 16, React 19, Tailwind v4, SQLite, Git Worktree Time Machine)",
+  "scripts": {
+    "dev": "next dev --port 3400",
+    "build": "next build",
+    "start": "next start --port 3400",
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "smoke": "./bin/smoke"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.105",
+    "@ai-sdk/google": "^4.0.117",
+    "@ai-sdk/openai": "^4.0.118",
+    "@ai-sdk/react": "^4.0.173",
+    "ai": "^7.0.169",
+    "next": "16.4.6",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-breaks": "^4.0.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.3.3",
+    "@tailwindcss/turbopack": "4.3.3",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.4.6",
+    "tailwindcss": "4.3.3",
+    "typescript": "^5"
+  },
+  "packageManager": "pnpm@11.23.0"
+}

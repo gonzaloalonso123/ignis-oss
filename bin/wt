@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMMON_GIT_DIR="$(git -C "$SCRIPT_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$COMMON_GIT_DIR" ]]; then
+  ROOT_DIR="$(cd "$COMMON_GIT_DIR/.." && pwd)"
+else
+  ROOT_DIR="$SCRIPT_DIR"
+fi
+WT_BASE="$(cd "$ROOT_DIR/.." && pwd)/ignis-worktrees"
+
+PROTECTED_FILES=(
+  "app/layout.tsx"
+  "app/components/core-error-boundary.tsx"
+  "app/components/immutable-control-panel.tsx"
+  "app/api/system/route.ts"
+  "app/api/chat/route.ts"
+  "bin/wt"
+)
+
+cmd="${1:-help}"
+name="${2:-}"
+
+ensure_name() {
+  if [[ -z "$name" ]]; then
+    echo "Usage: ./bin/wt $cmd <name>" >&2
+    exit 1
+  fi
+}
+
+check_protected_files() {
+  local target_branch="$1"
+  local target_wt_dir="${2:-}"
+  local changed
+  changed="$(git -C "$ROOT_DIR" diff --name-only "main...$target_branch" 2>/dev/null || true)"
+  if [[ -n "$target_wt_dir" && -d "$target_wt_dir" ]]; then
+    local uncommitted
+    uncommitted="$(git -C "$target_wt_dir" diff --name-only HEAD 2>/dev/null || true)"
+    local untracked
+    untracked="$(git -C "$target_wt_dir" ls-files --others --exclude-standard 2>/dev/null || true)"
+    changed="$(printf "%s\n%s\n%s" "$changed" "$uncommitted" "$untracked")"
+  fi
+  for p in "${PROTECTED_FILES[@]}"; do
+    if echo "$changed" | grep -qx "$p"; then
+      echo "ERROR: Worktree modified protected immutable core file: $p" >&2
+      echo "The Immutable Control Panel and core recovery APIs cannot be modified or deleted." >&2
+      exit 1
+    fi
+  done
+}
+
+case "$cmd" in
+  new|create)
+    ensure_name
+    mkdir -p "$WT_BASE"
+    wt_dir="$WT_BASE/$name"
+    branch="exp/$name"
+    if [[ -d "$wt_dir" ]]; then
+      echo "Worktree already exists at $wt_dir" >&2
+      exit 1
+    fi
+    git -C "$ROOT_DIR" worktree add -b "$branch" "$wt_dir" HEAD
+    if [[ -d "$ROOT_DIR/node_modules" && ! -e "$wt_dir/node_modules" ]]; then
+      ln -s "$ROOT_DIR/node_modules" "$wt_dir/node_modules"
+    fi
+    if [[ -f "$ROOT_DIR/.env" && ! -e "$wt_dir/.env" ]]; then
+      ln -s "$ROOT_DIR/.env" "$wt_dir/.env"
+    fi
+    echo "Created worktree: $wt_dir (branch: $branch)"
+    ;;
+
+  list|ls)
+    git -C "$ROOT_DIR" worktree list
+    ;;
+
+  path)
+    ensure_name
+    echo "$WT_BASE/$name"
+    ;;
+
+  verify|check)
+    ensure_name
+    wt_dir="$WT_BASE/$name"
+    branch="exp/$name"
+    if [[ ! -d "$wt_dir" ]]; then
+      echo "Worktree not found: $wt_dir" >&2
+      exit 1
+    fi
+    check_protected_files "$branch" "$wt_dir"
+    echo "Running next typegen + tsc in $wt_dir..."
+    (cd "$wt_dir" && ./node_modules/.bin/next typegen && ./node_modules/.bin/tsc --noEmit)
+    echo "Verification passed for $name."
+    ;;
+
+  land|merge)
+    ensure_name
+    wt_dir="$WT_BASE/$name"
+    branch="exp/$name"
+    if [[ ! -d "$wt_dir" ]]; then
+      echo "Worktree not found: $wt_dir" >&2
+      exit 1
+    fi
+    if [[ -n "$(git -C "$wt_dir" status --porcelain)" ]]; then
+      echo "Worktree $wt_dir has uncommitted changes. Commit them first." >&2
+      exit 1
+    fi
+    check_protected_files "$branch" "$wt_dir"
+    echo "Verifying $name before landing..."
+    (cd "$wt_dir" && ./node_modules/.bin/next typegen && ./node_modules/.bin/tsc --noEmit)
+    echo "Merging $branch into main..."
+    git -C "$ROOT_DIR" merge --ff-only "$branch"
+    touch "$ROOT_DIR/app/globals.css" 2>/dev/null || true
+    git -C "$ROOT_DIR" push origin main 2>/dev/null || true
+    rm -rf "$wt_dir/node_modules" "$wt_dir/.env" "$wt_dir/.next" "$wt_dir/tsconfig.tsbuildinfo"
+    git -C "$ROOT_DIR" worktree remove --force "$wt_dir"
+    git -C "$ROOT_DIR" branch -d "$branch"
+    echo "Landed $branch onto main, synced to private Ignis Vault VCS, and cleaned up worktree."
+    ;;
+
+  remove|rm)
+    ensure_name
+    wt_dir="$WT_BASE/$name"
+    branch="exp/$name"
+    rm -rf "$wt_dir/node_modules" "$wt_dir/.env" "$wt_dir/.next" "$wt_dir/tsconfig.tsbuildinfo" 2>/dev/null || true
+    git -C "$ROOT_DIR" worktree remove --force "$wt_dir" 2>/dev/null || rm -rf "$wt_dir"
+    git -C "$ROOT_DIR" worktree prune
+    git -C "$ROOT_DIR" branch -D "$branch" 2>/dev/null || true
+    echo "Removed worktree $name."
+    ;;
+
+  *)
+    echo "Usage: ./bin/wt {new|list|path|verify|land|remove} <name>"
+    ;;
+esac

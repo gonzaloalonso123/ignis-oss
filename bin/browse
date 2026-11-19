@@ -1,0 +1,131 @@
+#!/usr/bin/env -S node --no-warnings
+import { runBrowserTask } from "../lib/agent/browse.ts";
+
+const args = process.argv.slice(2);
+const cmd = args[0] || "help";
+
+function parseFlags(raw) {
+  const positional = [];
+  let clickSelector;
+  let evalExpression;
+  let outFlag;
+  let fullFlag = false;
+  let waitMs = 600;
+  let width = 1280;
+  let height = 800;
+
+  for (let i = 0; i < raw.length; i++) {
+    const a = raw[i];
+    if (a === "--click" && raw[i + 1]) {
+      clickSelector = raw[++i];
+    } else if (a === "--eval" && raw[i + 1]) {
+      evalExpression = raw[++i];
+    } else if ((a === "--out" || a === "-o") && raw[i + 1]) {
+      outFlag = raw[++i];
+    } else if (a === "--full") {
+      fullFlag = true;
+    } else if (a === "--wait" && raw[i + 1]) {
+      waitMs = Number(raw[++i]) || 600;
+    } else if (a === "--size" && raw[i + 1]) {
+      const [w, h] = raw[++i].split("x").map(Number);
+      if (w && h) {
+        width = w;
+        height = h;
+      }
+    } else {
+      positional.push(a);
+    }
+  }
+  return { positional, clickSelector, evalExpression, outFlag, fullFlag, waitMs, width, height };
+}
+
+async function main() {
+  if (cmd === "snapshot" || cmd === "inspect") {
+    const { positional, clickSelector, evalExpression, waitMs, width, height } = parseFlags(
+      args.slice(1),
+    );
+    const url = positional[0] || "http://localhost:3400";
+    const res = await runBrowserTask({
+      url,
+      mode: "snapshot",
+      clickSelector,
+      evalExpression,
+      waitMs,
+      width,
+      height,
+    });
+    console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+
+  if (cmd === "screenshot" || cmd === "shot") {
+    const { positional, clickSelector, evalExpression, outFlag, waitMs, width, height } =
+      parseFlags(args.slice(1));
+    const url = positional[0] || "http://localhost:3400";
+    const outPath = outFlag || positional[1];
+    const res = await runBrowserTask({
+      url,
+      mode: "screenshot",
+      outPath,
+      clickSelector,
+      evalExpression,
+      waitMs,
+      width,
+      height,
+    });
+    console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+
+  if (cmd === "eval") {
+    const { positional, clickSelector, fullFlag, waitMs, width, height } = parseFlags(
+      args.slice(1),
+    );
+    const url = positional[0] || "http://localhost:3400";
+    const expr = positional.slice(1).join(" ");
+    if (!expr) {
+      console.error("Usage: ./bin/browse eval <url> <js-expression> [--full]");
+      process.exit(1);
+    }
+    const res = await runBrowserTask({
+      url,
+      mode: "eval",
+      evalExpression: expr,
+      clickSelector,
+      waitMs,
+      width,
+      height,
+    });
+    if (fullFlag) {
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(
+        JSON.stringify(
+          {
+            ok: res.ok,
+            url: res.url,
+            title: res.title,
+            consoleErrors: res.consoleErrors,
+            evalResult: res.evalResult,
+            durationMs: res.durationMs,
+          },
+          null,
+          2,
+        ),
+      );
+    }
+    return;
+  }
+
+  console.log(`Usage: ./bin/browse <command> [options]
+
+Commands:
+  snapshot [url] [--click <css>] [--wait <ms>]                      Inspect live DOM, text, console errors, and interactive bounding boxes
+  screenshot [url] [out.png | --out out.png] [--click <css>]        Capture retina PNG screenshot (default: data/snapshots/snap-*.png) + DOM snapshot
+  eval <url> <js-expression> [--full]                               Evaluate JavaScript inside headless Chrome and return lean JSON result`);
+}
+
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});
